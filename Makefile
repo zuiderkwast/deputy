@@ -10,17 +10,59 @@ dep_gun = git https://github.com/ninenines/gun master
 
 include erlang.mk
 
-# Create self-signed certificate for localhost.
-# (This needs to be added to your browser to use TLS.)
-keyfile = priv/localhost.key
-certfile = priv/localhost.crt
+# Certificates
+# ------------
 
-all:: $(keyfile) $(certfile)
+# 1. Create a CA private key and a cert.
+# 2. Create a server private key and a CSR.
+# 3. The CA signs the CSR to produce the server cert.
 
-$(keyfile) $(certfile): | priv
-	openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 -nodes \
-	  -keyout $(keyfile) -out $(certfile) -subj "/CN=localhost" \
-	  -addext "subjectAltName=DNS:localhost,DNS:example.com,IP:127.0.0.1"
+# Inspired by
+# https://stackoverflow.com/questions/49553138/how-to-make-browser-trust-localhost-ssl-certificate
 
-priv:
-	mkdir priv
+org = localhost-ca
+ca = localhost-ca
+domain = localhost
+
+certdir = priv/certs
+cakey = $(certdir)/$(ca).key
+cacert = $(certdir)/$(ca).crt
+key = $(certdir)/$(domain).key
+csr = $(certdir)/$(domain).csr
+cert = $(certdir)/$(domain).crt
+extfile = $(certdir)/extfile-$(domain)
+
+all:: $(cacert) $(cakey) $(cert) $(key)
+
+clean::
+	rm -rf $(certdir)
+
+$(cakey): | $(certdir)
+	openssl genpkey -algorithm RSA -out $@
+
+$(cacert): $(cakey) | $(certdir)
+	openssl req -x509 -key $(cakey) -out $(cacert) \
+	    -subj "/CN=$(org)/O=$(org)"
+
+$(key): | $(certdir)
+	openssl genpkey -algorithm RSA -out $@
+
+$(csr): $(key) | $(certdir)
+	openssl req -new -key $(key) -out $@ \
+	    -subj "/CN=$(domain)/O=$(org)"
+
+$(cert): $(csr) $(cakey) $(cacert) $(extfile) | $(certdir)
+	openssl x509 -req -in $(csr) -days 3650 -out $@ \
+	    -CA $(cacert) -CAkey $(cakey) -CAcreateserial \
+	    -extfile $(extfile)
+
+$(extfile): | $(certdir)
+	printf "%s\n" \
+	 'basicConstraints = CA:FALSE' \
+	 'subjectKeyIdentifier = hash' \
+	 'authorityKeyIdentifier = keyid,issuer' \
+	 'subjectAltName = DNS:$(domain)' \
+	 > $@
+
+$(certdir):
+	mkdir -p $@
